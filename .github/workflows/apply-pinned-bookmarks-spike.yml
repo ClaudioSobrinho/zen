@@ -19,10 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Check out repository
+      - name: Check out repository tooling
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Stage installer outside the worktree
+        run: |
+          cp .github/spike/ZenPinnedBookmarksMirror.mjs.gz.b64 /tmp/ZenPinnedBookmarksMirror.mjs.gz.b64
+          cp .github/spike/apply.py /tmp/apply-pinned-bookmarks-spike.py
 
       - name: Check out development snapshot
         run: |
@@ -30,121 +35,8 @@ jobs:
           git checkout -B spike/pinned-bookmarks-mirror origin/dev
 
       - name: Install spike files
-        shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p src/zen/tabs prefs/zen docs
-
-          cat > /tmp/ZenPinnedBookmarksMirror.mjs.gz.b64 <<'B64'
-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
-B64
-          base64 -d /tmp/ZenPinnedBookmarksMirror.mjs.gz.b64 | gzip -d > src/zen/tabs/ZenPinnedBookmarksMirror.mjs
-
-          cat > prefs/zen/pinned-bookmarks-mirror.yaml <<'YAML'
-# This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0. If a copy of the MPL was not distributed with this
-# file, You can obtain one at http://mozilla.org/MPL/2.0/.
-
-# Experimental spike: mirror Zen's normal pinned tabs and folders to a normal
-# Firefox bookmark tree so Firefox Sync can expose it on mobile.
-- name: zen.bookmarks.mirror-pinned-tabs.enabled
-  value: false
-
-# Incoming bookmark deletions are deliberately opt-in during the spike. Local
-# unpins/deletions still remove their managed bookmark counterparts.
-- name: zen.bookmarks.mirror-pinned-tabs.allow-remote-deletions
-  value: false
-
-- name: zen.bookmarks.mirror-pinned-tabs.root-title
-  value: "Zen Workspaces"
-
-- name: zen.bookmarks.mirror-pinned-tabs.root-guid
-  value: ""
-
-- name: zen.bookmarks.mirror-pinned-tabs.mapping
-  value: ""
-
-- name: zen.bookmarks.mirror-pinned-tabs.debounce-ms
-  value: 500
-
-- name: zen.bookmarks.mirror-pinned-tabs.debug
-  value: false
-YAML
-
-          python3 - <<'PY'
-from pathlib import Path
-
-preloaded = Path("src/zen/common/ZenPreloadedScripts.js")
-text = preloaded.read_text()
-needle = '    "chrome://browser/content/zen-components/ZenFolders.mjs",\n'
-line = '    "chrome://browser/content/zen-components/ZenPinnedBookmarksMirror.mjs",\n'
-if line not in text:
-    if needle not in text:
-        raise SystemExit("ZenFolders preload anchor not found")
-    text = text.replace(needle, needle + line, 1)
-preloaded.write_text(text)
-
-jar = Path("src/zen/tabs/jar.inc.mn")
-text = jar.read_text()
-needle = "        content/browser/zen-components/ZenPinnedTabManager.mjs                  (../../zen/tabs/ZenPinnedTabManager.mjs)\n"
-line = "        content/browser/zen-components/ZenPinnedBookmarksMirror.mjs            (../../zen/tabs/ZenPinnedBookmarksMirror.mjs)\n"
-if line not in text:
-    if needle not in text:
-        raise SystemExit("ZenPinnedTabManager package anchor not found")
-    text = text.replace(needle, needle + line, 1)
-jar.write_text(text)
-PY
-
-          cat > docs/pinned-bookmarks-mirror-spike.md <<'DOC'
-# Pinned tabs and Firefox bookmarks mirror spike
-
-This experimental, feature-flagged implementation mirrors each Zen workspace's normal pinned-tab tree to ordinary Firefox bookmarks under:
-
-```text
-Bookmarks Menu / Zen Workspaces / <workspace name>
-```
-
-Pinned Zen folders become nested bookmark folders and pinned tabs become bookmarks. Changes in that bookmark subtree are reconciled back into Zen, allowing Firefox Sync and Firefox mobile to act as the cross-device transport.
-
-## Scope
-
-Included: existing workspaces, normal pinned tabs, nested Zen folders, titles, canonical pinned URLs, hierarchy, moves, and ordering.
-
-Excluded for this spike: Essentials, live folders, split views, unpinned tabs, workspace creation from mobile, workspace deletion from mobile, folder icons, collapsed state, session history, and unload state.
-
-## Safety
-
-Use a dedicated profile and back up bookmarks. Remote deletions are disabled by default.
-
-Enable in `about:config` and restart:
-
-```text
-zen.bookmarks.mirror-pinned-tabs.enabled = true
-zen.bookmarks.mirror-pinned-tabs.debug = true
-```
-
-Keep this false until all non-destructive cases have been tested:
-
-```text
-zen.bookmarks.mirror-pinned-tabs.allow-remote-deletions = false
-```
-
-## Manual API
-
-From the privileged Browser Console:
-
-```javascript
-const win = Services.wm.getMostRecentWindow("navigator:browser");
-win.gZenPinnedBookmarksMirror.status();
-await win.gZenPinnedBookmarksMirror.syncNow();
-await win.gZenPinnedBookmarksMirror.exportNow();
-await win.gZenPinnedBookmarksMirror.importNow();
-```
-
-## First test
-
-Create a disposable workspace and pinned folder in Zen. Confirm the same tree appears under `Bookmarks Menu / Zen Workspaces`. Then edit that bookmark tree in the desktop Library before involving Firefox Sync or a phone.
-DOC
+          python3 /tmp/apply-pinned-bookmarks-spike.py /tmp/ZenPinnedBookmarksMirror.mjs.gz.b64
 
       - name: Verify spike
         run: |
@@ -159,16 +51,18 @@ DOC
           git status --short
 
       - name: Commit and push spike branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "Claudio Sobrinho"
-          git config user.email "sobrinho.cal@gmail.com"
+          git config user.email "8421200+ClaudioSobrinho@users.noreply.github.com"
           git add prefs/zen/pinned-bookmarks-mirror.yaml \
             src/zen/common/ZenPreloadedScripts.js \
             src/zen/tabs/ZenPinnedBookmarksMirror.mjs \
             src/zen/tabs/jar.inc.mn \
             docs/pinned-bookmarks-mirror-spike.md
+          if git diff --cached --quiet; then
+            echo "Spike branch is already up to date."
+            exit 0
+          fi
           git commit -m "spike: mirror Zen pins to Firefox bookmarks"
           git push origin HEAD:refs/heads/spike/pinned-bookmarks-mirror --force
