@@ -1,0 +1,28 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# Experimental spike: mirror Zen's normal pinned tabs and folders to a normal
+# Firefox bookmark tree so Firefox Sync can expose it on mobile.
+- name: zen.bookmarks.mirror-pinned-tabs.enabled
+  value: false
+
+# Incoming bookmark deletions are deliberately opt-in during the spike. Local
+# unpins/deletions still remove their managed bookmark counterparts.
+- name: zen.bookmarks.mirror-pinned-tabs.allow-remote-deletions
+  value: false
+
+- name: zen.bookmarks.mirror-pinned-tabs.root-title
+  value: "Zen Workspaces"
+
+- name: zen.bookmarks.mirror-pinned-tabs.root-guid
+  value: ""
+
+- name: zen.bookmarks.mirror-pinned-tabs.mapping
+  value: ""
+
+- name: zen.bookmarks.mirror-pinned-tabs.debounce-ms
+  value: 500
+
+- name: zen.bookmarks.mirror-pinned-tabs.debug
+  value: false
