@@ -1,9 +1,6 @@
 name: Apply pinned bookmarks mirror spike
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -26,7 +23,7 @@ jobs:
 
       - name: Stage installer outside the worktree
         run: |
-          cp .github/spike/ZenPinnedBookmarksMirror.mjs.gz.b64 /tmp/ZenPinnedBookmarksMirror.mjs.gz.b64
+          cat .github/spike/parts/part-* > /tmp/ZenPinnedBookmarksMirror.mjs.gz.b64
           cp .github/spike/apply.py /tmp/apply-pinned-bookmarks-spike.py
 
       - name: Check out development snapshot
