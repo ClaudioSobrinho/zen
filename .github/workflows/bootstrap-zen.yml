@@ -1,9 +1,6 @@
 name: Bootstrap Zen upstream
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
