@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: bootstrap-zen-upstream
+  cancel-in-progress: true
+
 jobs:
   import-upstream:
     if: github.repository == 'ClaudioSobrinho/zen'
@@ -19,10 +23,19 @@ jobs:
         run: |
           git clone --depth 1 --single-branch --branch dev https://github.com/zen-browser/desktop.git upstream
 
+      - name: Create standalone snapshot commit
+        run: |
+          cd upstream
+          git config user.name "Zen bootstrap"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout --orphan imported-dev
+          git add -A
+          git commit -m "chore: import zen-browser/desktop dev snapshot"
+
       - name: Push snapshot to this repository's dev branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd upstream
           git remote add target "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push target HEAD:refs/heads/dev --force
+          git push target imported-dev:refs/heads/dev --force
