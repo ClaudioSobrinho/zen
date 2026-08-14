@@ -1,6 +1,9 @@
 name: Apply pinned bookmarks mirror spike
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
