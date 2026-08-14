@@ -26,6 +26,7 @@ jobs:
       - name: Create standalone snapshot commit
         run: |
           cd upstream
+          rm -rf .github/workflows
           git config user.name "Zen bootstrap"
           git config user.email "actions@users.noreply.github.com"
           git checkout --orphan imported-dev
