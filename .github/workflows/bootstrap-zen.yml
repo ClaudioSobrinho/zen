@@ -1,0 +1,28 @@
+name: Bootstrap Zen upstream
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import-upstream:
+    if: github.repository == 'ClaudioSobrinho/zen'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Clone Zen upstream dev snapshot
+        run: |
+          git clone --depth 1 --single-branch --branch dev https://github.com/zen-browser/desktop.git upstream
+
+      - name: Push snapshot to this repository's dev branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd upstream
+          git remote add target "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push target HEAD:refs/heads/dev --force
