@@ -55,11 +55,10 @@ jobs:
           work_dir="$PWD/package-work"
           app_path="${work_dir}/${APP_NAME}.app"
           stage_dir="$PWD/dmg-stage"
-          omni_dir="$(mktemp -d /tmp/zen-mirror-omni.XXXXXX)"
 
           cleanup() {
             hdiutil detach "${mount_dir}" -quiet 2>/dev/null || true
-            rm -rf "${mount_dir}" "${omni_dir}"
+            rm -rf "${mount_dir}"
           }
           trap cleanup EXIT
 
@@ -76,54 +75,91 @@ jobs:
           hdiutil detach "${mount_dir}" -quiet
 
           resources="${app_path}/Contents/Resources"
-          browser_omni="${resources}/browser/omni.ja"
+          macos_dir="${app_path}/Contents/MacOS"
           info_plist="${app_path}/Contents/Info.plist"
+          mirror_dir="${resources}/zen-mirror-test"
+          defaults_dir="${resources}/defaults/pref"
 
-          if [[ ! -f "${browser_omni}" ]]; then
-            echo "Could not find ${browser_omni}" >&2
-            find "${app_path}/Contents" -maxdepth 4 -name 'omni.ja' -print
-            exit 1
-          fi
+          mkdir -p "${mirror_dir}" "${defaults_dir}"
 
-          (
-            cd "${omni_dir}"
-            /usr/bin/unzip -q "${browser_omni}"
-          )
+          # AutoConfig loads ordinary scripts into each browser window. Wrapping
+          # the spike in an IIFE keeps its top-level lexical names isolated from
+          # Zen's existing browser scripts.
+          {
+            printf '%s\n' '(() => {'
+            cat src/zen/tabs/ZenPinnedBookmarksMirror.mjs
+            printf '%s\n' '})();'
+          } > "${mirror_dir}/ZenPinnedBookmarksMirror.js"
 
-          preloaded="$(find "${omni_dir}" -type f -name 'ZenPreloadedScripts.js' -print -quit)"
-          if [[ -z "${preloaded}" ]]; then
-            echo "ZenPreloadedScripts.js was not found inside browser/omni.ja" >&2
-            find "${omni_dir}" -type f | grep -i 'ZenPreloaded' || true
-            exit 1
-          fi
+          cat > "${defaults_dir}/zen-mirror-autoconfig.js" <<'AUTOCONFIG_PREFS'
+          // Zen Mirror Test AutoConfig bootstrap.
+          pref("general.config.filename", "zen-mirror.cfg");
+          pref("general.config.obscure_value", 0);
+          pref("general.config.sandbox_enabled", false);
+          AUTOCONFIG_PREFS
 
-          module_dir="$(dirname "${preloaded}")"
-          cp src/zen/tabs/ZenPinnedBookmarksMirror.mjs \
-            "${module_dir}/ZenPinnedBookmarksMirror.mjs"
+          cat > "${resources}/zen-mirror.cfg" <<'AUTOCONFIG'
+          // Zen Mirror Test privileged bootstrap. The first line is intentionally a comment.
+          try {
+            var ZenMirrorServices = ChromeUtils.importESModule(
+              "resource://gre/modules/Services.sys.mjs"
+            ).Services;
+            var ZenMirrorCi = Components.interfaces;
+            var ZenMirrorBootstrap = {
+              scriptURI: null,
 
-          PRELOADED_FILE="${preloaded}" python3 <<'PY'
-          import os
-          from pathlib import Path
+              init() {
+                var script = ZenMirrorServices.dirsvc.get("GreD", ZenMirrorCi.nsIFile);
+                script.append("zen-mirror-test");
+                script.append("ZenPinnedBookmarksMirror.js");
+                this.scriptURI = ZenMirrorServices.io.newFileURI(script).spec;
 
-          path = Path(os.environ["PRELOADED_FILE"])
-          text = path.read_text(encoding="utf-8")
-          module = '"chrome://browser/content/zen-components/ZenPinnedBookmarksMirror.mjs",'
-          if module not in text:
-              anchor = '"chrome://browser/content/zen-components/ZenPinnedTabManager.mjs",'
-              if anchor not in text:
-                  raise SystemExit("Could not locate the ZenPinnedTabManager preload anchor")
-              text = text.replace(anchor, anchor + "\n    " + module, 1)
-              path.write_text(text, encoding="utf-8")
-          PY
+                ZenMirrorServices.obs.addObserver(
+                  this,
+                  "browser-delayed-startup-finished"
+                );
 
-          rm -f "${browser_omni}"
-          (
-            cd "${omni_dir}"
-            /usr/bin/zip -q -r -9 "${browser_omni}" .
-          )
+                for (var win of ZenMirrorServices.wm.getEnumerator("navigator:browser")) {
+                  if (win.gBrowserInit?.delayedStartupFinished) {
+                    this.load(win);
+                  }
+                }
+              },
 
-          mkdir -p "${resources}/defaults/pref"
-          cat > "${resources}/defaults/pref/zen-mirror-test.js" <<'PREFS'
+              observe(win, topic) {
+                if (topic === "browser-delayed-startup-finished") {
+                  this.load(win);
+                }
+              },
+
+              load(win) {
+                if (!win || win.closed || win.gZenPinnedBookmarksMirror) {
+                  return;
+                }
+                try {
+                  ZenMirrorServices.scriptloader.loadSubScript(
+                    this.scriptURI,
+                    win,
+                    "UTF-8"
+                  );
+                } catch (error) {
+                  Components.utils.reportError(
+                    "Zen Mirror Test could not load the pinned bookmarks mirror: " +
+                      error
+                  );
+                }
+              },
+            };
+
+            ZenMirrorBootstrap.init();
+          } catch (error) {
+            Components.utils.reportError(
+              "Zen Mirror Test AutoConfig failed: " + error
+            );
+          }
+          AUTOCONFIG
+
+          cat > "${defaults_dir}/zen-mirror-test.js" <<'PREFS'
           // Isolated Zen Mirror Test defaults.
           pref("zen.bookmarks.mirror-pinned-tabs.enabled", true);
           pref("zen.bookmarks.mirror-pinned-tabs.allow-remote-deletions", false);
@@ -158,25 +194,26 @@ jobs:
             || /usr/libexec/PlistBuddy -c "Add :CFBundleName string ${APP_NAME}" "${info_plist}"
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier app.zen_browser.zen.mirrortest" "${info_plist}"
 
-          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${info_plist}")"
-          executable_path="${app_path}/Contents/MacOS/${executable}"
-          original_path="${app_path}/Contents/MacOS/${executable}-bin"
+          original_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${info_plist}")"
+          original_path="${macos_dir}/${original_executable}"
+          wrapper_name="zen-mirror-launcher"
+          wrapper_path="${macos_dir}/${wrapper_name}"
 
-          if [[ ! -e "${executable_path}" ]]; then
-            echo "Could not find the bundle executable ${executable_path}" >&2
+          if [[ ! -x "${original_path}" ]]; then
+            echo "Could not find the original executable ${original_path}" >&2
             exit 1
           fi
 
-          mv "${executable_path}" "${original_path}"
-          cat > "${executable_path}" <<'LAUNCHER'
+          cat > "${wrapper_path}" <<LAUNCHER
           #!/bin/bash
           set -e
-          HERE="$(cd "$(dirname "$0")" && pwd)"
-          PROFILE_DIR="$HOME/Library/Application Support/ZenMirrorTest/profile"
-          mkdir -p "$PROFILE_DIR"
-          exec "$HERE/zen-bin" -no-remote -profile "$PROFILE_DIR" "$@"
+          HERE="\$(cd "\$(dirname "\$0")" && pwd)"
+          PROFILE_DIR="\$HOME/Library/Application Support/ZenMirrorTest/profile"
+          mkdir -p "\$PROFILE_DIR"
+          exec "\$HERE/${original_executable}" -no-remote -profile "\$PROFILE_DIR" "\$@"
           LAUNCHER
-          chmod +x "${executable_path}"
+          chmod +x "${wrapper_path}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${wrapper_name}" "${info_plist}"
 
           cat > "${resources}/ZEN_MIRROR_TEST.txt" <<EOF
           Zen Mirror Test ${ZEN_VERSION}
@@ -186,8 +223,8 @@ jobs:
 
           ~/Library/Application Support/ZenMirrorTest/profile
 
-          Remote bookmark deletions are disabled by default. Automatic application
-          updates are disabled so an official update cannot overwrite the spike.
+          The mirror feature and debug logging are enabled. Remote bookmark
+          deletions and automatic application updates are disabled by default.
           EOF
 
           xattr -cr "${app_path}" || true
@@ -217,15 +254,24 @@ jobs:
           verify_mount="$(mktemp -d /tmp/zen-mirror-verify.XXXXXX)"
           trap 'hdiutil detach "${verify_mount}" -quiet 2>/dev/null || true; rm -rf "${verify_mount}"' EXIT
           hdiutil attach "${OUTPUT_DMG}" -nobrowse -readonly -mountpoint "${verify_mount}"
+
           app="${verify_mount}/${APP_NAME}.app"
-          omni="${app}/Contents/Resources/browser/omni.ja"
-          test -x "${app}/Contents/MacOS/zen"
-          test -x "${app}/Contents/MacOS/zen-bin"
-          test -f "${app}/Contents/Resources/defaults/pref/zen-mirror-test.js"
-          /usr/bin/unzip -l "${omni}" | grep 'ZenPinnedBookmarksMirror.mjs'
-          /usr/bin/unzip -p "${omni}" \
-            'chrome/browser/content/browser/zen-components/ZenPreloadedScripts.js' \
-            | grep 'ZenPinnedBookmarksMirror.mjs'
+          resources="${app}/Contents/Resources"
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${app}/Contents/Info.plist")"
+
+          test "${executable}" = "zen-mirror-launcher"
+          test -x "${app}/Contents/MacOS/zen-mirror-launcher"
+          test -f "${resources}/zen-mirror-test/ZenPinnedBookmarksMirror.js"
+          test -f "${resources}/defaults/pref/zen-mirror-autoconfig.js"
+          test -f "${resources}/defaults/pref/zen-mirror-test.js"
+          test -f "${resources}/zen-mirror.cfg"
+
+          bash -n "${app}/Contents/MacOS/zen-mirror-launcher"
+          grep -F 'general.config.filename' "${resources}/defaults/pref/zen-mirror-autoconfig.js"
+          grep -F 'general.config.sandbox_enabled' "${resources}/defaults/pref/zen-mirror-autoconfig.js"
+          grep -F 'ZenPinnedBookmarksMirror.js' "${resources}/zen-mirror.cfg"
+          grep -F 'gZenPinnedBookmarksMirror' "${resources}/zen-mirror-test/ZenPinnedBookmarksMirror.js"
+          grep -F 'allow-remote-deletions", false' "${resources}/defaults/pref/zen-mirror-test.js"
           codesign --verify --deep --strict --verbose=2 "${app}"
 
       - name: Upload workflow artifact
@@ -252,9 +298,10 @@ jobs:
 
           - Universal macOS application: Intel and Apple Silicon
           - Separate profile: ~/Library/Application Support/ZenMirrorTest/profile
+          - Feature enabled automatically through Firefox AutoConfig
           - Automatic application updates disabled
           - Remote bookmark deletions disabled by default
-          - Not notarized by Apple; on first launch, right-click the app and select Open
+          - Ad-hoc signed, not notarized by Apple; on first launch, right-click the app and select Open
 
           This package is for disposable testing before proposing the feature upstream.
           EOF
