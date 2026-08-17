@@ -1,0 +1,275 @@
+name: Build standalone Zen Mirror Test for macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      zen_version:
+        description: Official Zen release tag to patch
+        required: true
+        default: 1.21.14b
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-macos-zen-mirror-test.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-macos-zen-mirror-test
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package universal macOS test app
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      ZEN_VERSION: ${{ inputs.zen_version || '1.21.14b' }}
+      APP_NAME: Zen Mirror Test
+
+    steps:
+      - name: Check out the spike branch
+        uses: actions/checkout@v4
+        with:
+          ref: spike/pinned-bookmarks-mirror
+          fetch-depth: 1
+
+      - name: Download the matching official universal Zen DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/zen-browser/desktop/releases/download/${ZEN_VERSION}/zen.macos-universal.dmg"
+          echo "Downloading ${url}"
+          curl --fail --location --retry 3 --output official-zen.dmg "${url}"
+          shasum -a 256 official-zen.dmg
+
+      - name: Create the isolated patched application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mount_dir="$(mktemp -d /tmp/zen-mirror-mount.XXXXXX)"
+          work_dir="$PWD/package-work"
+          app_path="${work_dir}/${APP_NAME}.app"
+          stage_dir="$PWD/dmg-stage"
+          omni_dir="$(mktemp -d /tmp/zen-mirror-omni.XXXXXX)"
+
+          cleanup() {
+            hdiutil detach "${mount_dir}" -quiet 2>/dev/null || true
+            rm -rf "${mount_dir}" "${omni_dir}"
+          }
+          trap cleanup EXIT
+
+          mkdir -p "${work_dir}" "${stage_dir}"
+          hdiutil attach official-zen.dmg -nobrowse -readonly -mountpoint "${mount_dir}"
+
+          source_app="$(find "${mount_dir}" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          if [[ -z "${source_app}" ]]; then
+            echo "No .app bundle found in the official DMG" >&2
+            exit 1
+          fi
+
+          ditto "${source_app}" "${app_path}"
+          hdiutil detach "${mount_dir}" -quiet
+
+          resources="${app_path}/Contents/Resources"
+          browser_omni="${resources}/browser/omni.ja"
+          info_plist="${app_path}/Contents/Info.plist"
+
+          if [[ ! -f "${browser_omni}" ]]; then
+            echo "Could not find ${browser_omni}" >&2
+            find "${app_path}/Contents" -maxdepth 4 -name 'omni.ja' -print
+            exit 1
+          fi
+
+          (
+            cd "${omni_dir}"
+            /usr/bin/unzip -q "${browser_omni}"
+          )
+
+          preloaded="$(find "${omni_dir}" -type f -name 'ZenPreloadedScripts.js' -print -quit)"
+          if [[ -z "${preloaded}" ]]; then
+            echo "ZenPreloadedScripts.js was not found inside browser/omni.ja" >&2
+            find "${omni_dir}" -type f | grep -i 'ZenPreloaded' || true
+            exit 1
+          fi
+
+          module_dir="$(dirname "${preloaded}")"
+          cp src/zen/tabs/ZenPinnedBookmarksMirror.mjs \
+            "${module_dir}/ZenPinnedBookmarksMirror.mjs"
+
+          PRELOADED_FILE="${preloaded}" python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["PRELOADED_FILE"])
+          text = path.read_text(encoding="utf-8")
+          module = '"chrome://browser/content/zen-components/ZenPinnedBookmarksMirror.mjs",'
+          if module not in text:
+              anchor = '"chrome://browser/content/zen-components/ZenPinnedTabManager.mjs",'
+              if anchor not in text:
+                  raise SystemExit("Could not locate the ZenPinnedTabManager preload anchor")
+              text = text.replace(anchor, anchor + "\n    " + module, 1)
+              path.write_text(text, encoding="utf-8")
+          PY
+
+          rm -f "${browser_omni}"
+          (
+            cd "${omni_dir}"
+            /usr/bin/zip -q -r -9 "${browser_omni}" .
+          )
+
+          mkdir -p "${resources}/defaults/pref"
+          cat > "${resources}/defaults/pref/zen-mirror-test.js" <<'PREFS'
+          // Isolated Zen Mirror Test defaults.
+          pref("zen.bookmarks.mirror-pinned-tabs.enabled", true);
+          pref("zen.bookmarks.mirror-pinned-tabs.allow-remote-deletions", false);
+          pref("zen.bookmarks.mirror-pinned-tabs.root-title", "Zen Workspaces");
+          pref("zen.bookmarks.mirror-pinned-tabs.debounce-ms", 500);
+          pref("zen.bookmarks.mirror-pinned-tabs.debug", true);
+          pref("app.update.enabled", false);
+          pref("app.update.auto", false);
+          pref("browser.shell.checkDefaultBrowser", false);
+          PREFS
+
+          mkdir -p "${resources}/distribution"
+          POLICIES_FILE="${resources}/distribution/policies.json" python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["POLICIES_FILE"])
+          try:
+              data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+          except Exception:
+              data = {}
+          policies = data.setdefault("policies", {})
+          policies["DisableAppUpdate"] = True
+          policies["DontCheckDefaultBrowser"] = True
+          path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${APP_NAME}" "${info_plist}" \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ${APP_NAME}" "${info_plist}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_NAME}" "${info_plist}" \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleName string ${APP_NAME}" "${info_plist}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier app.zen_browser.zen.mirrortest" "${info_plist}"
+
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${info_plist}")"
+          executable_path="${app_path}/Contents/MacOS/${executable}"
+          original_path="${app_path}/Contents/MacOS/${executable}-bin"
+
+          if [[ ! -e "${executable_path}" ]]; then
+            echo "Could not find the bundle executable ${executable_path}" >&2
+            exit 1
+          fi
+
+          mv "${executable_path}" "${original_path}"
+          cat > "${executable_path}" <<'LAUNCHER'
+          #!/bin/bash
+          set -e
+          HERE="$(cd "$(dirname "$0")" && pwd)"
+          PROFILE_DIR="$HOME/Library/Application Support/ZenMirrorTest/profile"
+          mkdir -p "$PROFILE_DIR"
+          exec "$HERE/zen-bin" -no-remote -profile "$PROFILE_DIR" "$@"
+          LAUNCHER
+          chmod +x "${executable_path}"
+
+          cat > "${resources}/ZEN_MIRROR_TEST.txt" <<EOF
+          Zen Mirror Test ${ZEN_VERSION}
+
+          This is an experimental, unofficial copy of Zen Browser containing the
+          pinned-tabs/bookmarks mirror spike. It uses this isolated profile:
+
+          ~/Library/Application Support/ZenMirrorTest/profile
+
+          Remote bookmark deletions are disabled by default. Automatic application
+          updates are disabled so an official update cannot overwrite the spike.
+          EOF
+
+          xattr -cr "${app_path}" || true
+          codesign --force --deep --sign - --timestamp=none \
+            --preserve-metadata=entitlements,flags,runtime "${app_path}"
+          codesign --verify --deep --strict --verbose=2 "${app_path}"
+
+          ditto "${app_path}" "${stage_dir}/${APP_NAME}.app"
+          ln -s /Applications "${stage_dir}/Applications"
+          cp "${resources}/ZEN_MIRROR_TEST.txt" "${stage_dir}/README.txt"
+
+          output="Zen-Mirror-Test-${ZEN_VERSION}-universal.dmg"
+          hdiutil create \
+            -volname "${APP_NAME}" \
+            -srcfolder "${stage_dir}" \
+            -format UDZO \
+            -ov \
+            "${output}"
+
+          echo "OUTPUT_DMG=${output}" >> "$GITHUB_ENV"
+          shasum -a 256 "${output}" | tee "${output}.sha256"
+
+      - name: Verify the generated DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_mount="$(mktemp -d /tmp/zen-mirror-verify.XXXXXX)"
+          trap 'hdiutil detach "${verify_mount}" -quiet 2>/dev/null || true; rm -rf "${verify_mount}"' EXIT
+          hdiutil attach "${OUTPUT_DMG}" -nobrowse -readonly -mountpoint "${verify_mount}"
+          app="${verify_mount}/${APP_NAME}.app"
+          omni="${app}/Contents/Resources/browser/omni.ja"
+          test -x "${app}/Contents/MacOS/zen"
+          test -x "${app}/Contents/MacOS/zen-bin"
+          test -f "${app}/Contents/Resources/defaults/pref/zen-mirror-test.js"
+          /usr/bin/unzip -l "${omni}" | grep 'ZenPinnedBookmarksMirror.mjs'
+          /usr/bin/unzip -p "${omni}" \
+            'chrome/browser/content/browser/zen-components/ZenPreloadedScripts.js' \
+            | grep 'ZenPinnedBookmarksMirror.mjs'
+          codesign --verify --deep --strict --verbose=2 "${app}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zen-Mirror-Test-${{ env.ZEN_VERSION }}-macOS
+          path: |
+            ${{ env.OUTPUT_DMG }}
+            ${{ env.OUTPUT_DMG }}.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish an installable prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="zen-mirror-test-${ZEN_VERSION}"
+          title="Zen Mirror Test ${ZEN_VERSION} for macOS"
+          notes_file="$(mktemp)"
+          cat > "${notes_file}" <<EOF
+          Unofficial experimental Zen build containing the pinned-tabs/bookmarks mirror spike.
+
+          - Universal macOS application: Intel and Apple Silicon
+          - Separate profile: ~/Library/Application Support/ZenMirrorTest/profile
+          - Automatic application updates disabled
+          - Remote bookmark deletions disabled by default
+          - Not notarized by Apple; on first launch, right-click the app and select Open
+
+          This package is for disposable testing before proposing the feature upstream.
+          EOF
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release edit "${tag}" --title "${title}" --notes-file "${notes_file}" --prerelease
+          else
+            gh release create "${tag}" \
+              --target spike/pinned-bookmarks-mirror \
+              --title "${title}" \
+              --notes-file "${notes_file}" \
+              --prerelease
+          fi
+
+          gh release upload "${tag}" \
+            "${OUTPUT_DMG}" \
+            "${OUTPUT_DMG}.sha256" \
+            --clobber
